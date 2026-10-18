@@ -452,7 +452,7 @@ class TTSEdgeAloudService : BaseReadAloudService(), Player.Listener {
 
 
 @UnstableApi
-class ByteArrayDataSource(private val mediaMap: HashMap<String, ByteArray>) : DataSource {
+class ByteArrayDataSource(private val mediaMap: Map<String, ByteArray>) : DataSource {
 
     private var readPosition = 0
     private var opened = false
@@ -515,7 +515,7 @@ class ByteArrayDataSource(private val mediaMap: HashMap<String, ByteArray>) : Da
 
 
 @UnstableApi
-class ByteArrayDataSourceFactory(private val mediaMap: HashMap<String, ByteArray>) :
+class ByteArrayDataSourceFactory(private val mediaMap: Map<String, ByteArray>) :
     DataSource.Factory {
     override fun createDataSource(): DataSource {
         return ByteArrayDataSource(mediaMap)
