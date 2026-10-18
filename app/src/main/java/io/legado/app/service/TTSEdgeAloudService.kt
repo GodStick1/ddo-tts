@@ -4,6 +4,8 @@ import android.annotation.SuppressLint
 import android.app.PendingIntent
 import android.content.Context
 import android.net.Uri
+import android.os.Handler
+import android.os.Looper
 import android.util.Log
 import androidx.core.net.toUri
 import androidx.lifecycle.lifecycleScope
@@ -41,9 +43,8 @@ import kotlinx.coroutines.withContext
 import java.io.ByteArrayOutputStream
 import java.io.IOException
 import java.io.InputStream
-import java.util.Timer
-import kotlin.collections.set
-import kotlin.concurrent.schedule
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.CopyOnWriteArrayList
 import kotlin.coroutines.coroutineContext
 
 /**
@@ -67,8 +68,9 @@ class TTSEdgeAloudService : BaseReadAloudService(), Player.Listener {
     private var isReloadAudio = 0
     private val downloadTaskActiveLock = Mutex()
     private val edgeSpeakFetch = EdgeSpeakFetch()
-    private val audioCache = HashMap<String, ByteArray>()
-    private val audioCacheList = arrayListOf<String>()
+    // 下载线程（IO）会写、ExoPlayer 载入线程和主线程会读，必须用并发容器
+    private val audioCache = ConcurrentHashMap<String, ByteArray>()
+    private val audioCacheList = CopyOnWriteArrayList<String>()
     private var previousMediaId = ""
     private lateinit var ctx:Context
 
@@ -205,9 +207,14 @@ class TTSEdgeAloudService : BaseReadAloudService(), Player.Listener {
             return withContext(Dispatchers.IO) {
                 val voice = getVoiceValue()
                 val inputStream = edgeSpeakFetch.synthesizeText(speakText, speechRate, voice)
-                cacheAudio(fileName, inputStream)
+                val audioBytes = inputStream.toByteArray()
+                // 任务被取消（例如切换语速）时不要写缓存：避免半截音频和并发写
+                coroutineContext.ensureActive()
+                cacheAudio(fileName, audioBytes)
                 "success"
             }
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             Log.i(tag, "edgeSpeakFetch失败: $e")
             cacheAudio(fileName, silentBytes)
@@ -369,10 +376,11 @@ class TTSEdgeAloudService : BaseReadAloudService(), Player.Listener {
             if (isReloadAudio == 0) {
                 playErrorNo = 0
                 isReloadAudio++
-                Timer().schedule(2000) {
+                // 必须回到主线程，ExoPlayer 有线程校验
+                Handler(Looper.getMainLooper()).postDelayed({
                     reloadAudio()
                     Log.e(tag, "重试本章节")
-                }
+                }, 2000)
             } else {
                 pauseReadAloud()
             }
@@ -391,22 +399,11 @@ class TTSEdgeAloudService : BaseReadAloudService(), Player.Listener {
         return servicePendingIntent<TTSEdgeAloudService>(actionStr)
     }
 
-    private fun cacheAudio(key: String, inputStream: InputStream): Boolean {
-        return try {
-            audioCache[key] = inputStream.toByteArray()
-            audioCacheList.add(key)
-            Log.d(tag, "成功缓存 cacheAudio: $key")
-            true
-        } catch (e: Exception) {
-            Log.d(tag, "缓存失败 cacheAudio: $key")
-            e.printStackTrace()
-            false
-        }
-    }
-
     private fun cacheAudio(key: String, byteArray: ByteArray): Boolean {
-        audioCache[key] = byteArray
-        audioCacheList.add(key)
+        audioCache.put(key, byteArray)
+        if (!audioCacheList.contains(key)) {
+            audioCacheList.add(key)
+        }
         return true
     }
 
@@ -468,14 +465,18 @@ class ByteArrayDataSource(private val mediaMap: HashMap<String, ByteArray>) : Da
 
     override fun open(dataSpec: DataSpec): Long {
         val mediaId = getMediaIdFromUri(dataSpec.uri)
-        if (!mediaMap.containsKey(mediaId)) return 0
-
-
-        currByteArray = mediaMap[mediaId] as ByteArray
+        // 找不到就抛错：返回 0 会被当成「长度为 0 的音频」，后续 read() 直接报
+        // "DataSource not opened"，还会把播放错误计数刷上去
+        currByteArray = mediaMap[mediaId]
+            ?: throw IOException("audio not ready: $mediaId")
         readPosition = dataSpec.position.toInt()
+        if (readPosition < 0 || readPosition > currByteArray.size) {
+            throw IOException("Invalid position: $readPosition / ${currByteArray.size}")
+        }
         val length =
-            if (dataSpec.length == C.LENGTH_UNSET.toLong()) currByteArray.size - readPosition else dataSpec.length.toInt()
-        if (readPosition + length > currByteArray.size) {
+            if (dataSpec.length == C.LENGTH_UNSET.toLong()) currByteArray.size - readPosition
+            else dataSpec.length.toInt()
+        if (length < 0 || readPosition + length > currByteArray.size) {
             throw IOException("Unsatisfiable range: $readPosition + $length > ${currByteArray.size}")
         }
         opened = true

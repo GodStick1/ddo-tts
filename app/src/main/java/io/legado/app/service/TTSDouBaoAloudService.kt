@@ -3,6 +3,8 @@ package io.legado.app.service
 import android.annotation.SuppressLint
 import android.app.PendingIntent
 import android.content.Context
+import android.os.Handler
+import android.os.Looper
 import android.util.Log
 import android.widget.Toast
 import androidx.core.net.toUri
@@ -35,10 +37,8 @@ import kotlinx.coroutines.withContext
 import java.io.ByteArrayOutputStream
 import java.io.InputStream
 import java.util.ArrayList
-import java.util.Timer
 import java.util.concurrent.CopyOnWriteArrayList
 import kotlin.collections.set
-import kotlin.concurrent.schedule
 
 /**
  * 豆包
@@ -487,10 +487,11 @@ class TTSDouBaoAloudService : BaseReadAloudService(), Player.Listener {
             if (isReloadAudio == 0) {
                 playErrorNo = 0
                 isReloadAudio++
-                Timer().schedule(2000) {
+                // ExoPlayer 有线程校验，必须回主线程
+                Handler(Looper.getMainLooper()).postDelayed({
                     reloadAudio()
                     Log.e(tag, "重试本章节")
-                }
+                }, 2000)
             } else {
                 pauseReadAloud()
             }

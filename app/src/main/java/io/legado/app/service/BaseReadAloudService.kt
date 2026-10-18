@@ -235,19 +235,19 @@ abstract class BaseReadAloudService : BaseService(),
 
     private fun newReadAloud(play: Boolean, pageIndex: Int, startPos: Int) {
         execute(executeContext = IO) {
-            this@BaseReadAloudService.pageIndex = pageIndex
-            textChapter = ReadBook.curTextChapter
-            val textChapter = textChapter ?: return@execute
-            if (!textChapter.isCompleted) {
+            // 只在 IO 线程做数据计算，所有可变状态统一回主线程赋值，
+            // 否则主线程的 upPlayPos() 可能读到一半新一半旧的字段（跳段/越界）
+            val chapter = ReadBook.curTextChapter ?: return@execute
+            if (!chapter.isCompleted) {
                 return@execute
             }
-            readAloudNumber = textChapter.getReadLength(pageIndex) + startPos
-            readAloudByPage = getPrefBoolean(PreferKey.readAloudByPage)
-            contentList = textChapter.getNeedReadAloud(0, readAloudByPage, 0)
+            val byPage = getPrefBoolean(PreferKey.readAloudByPage)
+            var position = chapter.getReadLength(pageIndex) + startPos
+            val list = chapter.getNeedReadAloud(0, byPage, 0)
                 .split("\n")
                 .filter { it.isNotEmpty() }
             var pos = startPos
-            val page = textChapter.getPage(pageIndex)!!
+            val page = chapter.getPage(pageIndex)!!
             if (pos > 0) {
                 for (paragraph in page.paragraphs) {
                     val tmp = pos - paragraph.length - 1
@@ -255,23 +255,28 @@ abstract class BaseReadAloudService : BaseService(),
                     pos = tmp
                 }
             }
-            nowSpeak = textChapter.getParagraphNum(readAloudNumber + 1, readAloudByPage) - 1
-            if (!readAloudByPage && startPos == 0 && !toLast) {
-                pos = page.chapterPosition -
-                        textChapter.paragraphs[nowSpeak].chapterPosition
+            var speakIndex = chapter.getParagraphNum(position + 1, byPage) - 1
+            if (!byPage && startPos == 0 && !toLast) {
+                pos = page.chapterPosition - chapter.paragraphs[speakIndex].chapterPosition
             }
-            if (toLast) {
-                toLast = false
-                readAloudNumber = textChapter.getLastParagraphPosition()
-                nowSpeak = contentList.lastIndex
+            val fromLast = toLast
+            if (fromLast) {
+                position = chapter.getLastParagraphPosition()
+                speakIndex = list.lastIndex
                 if (page.paragraphs.size == 1) {
-                    pos = page.chapterPosition -
-                            textChapter.paragraphs[nowSpeak].chapterPosition
+                    pos = page.chapterPosition - chapter.paragraphs[speakIndex].chapterPosition
                 }
             }
-            paragraphStartPos = pos
-            waitNewReadAloud = false
             launch(Main) {
+                this@BaseReadAloudService.pageIndex = pageIndex
+                textChapter = chapter
+                readAloudByPage = byPage
+                readAloudNumber = position
+                contentList = list
+                nowSpeak = speakIndex
+                paragraphStartPos = pos
+                if (fromLast) toLast = false
+                waitNewReadAloud = false
                 if (play) play() else pageChanged = true
             }
         }.onError {

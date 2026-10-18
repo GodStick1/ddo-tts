@@ -83,6 +83,9 @@ class EdgeSpeakFetch {
         rate: Int,
         voice: String = DEFAULT_VOICE
     ): InputStream {
+        // 如果上一句还在合成（例如切换语速时取消了下载任务），先把它关掉，
+        // 否则读端会一直阻塞在 read() 上，协程永远不结束
+        closeQuietly(currentOut)
         val out = PipedOutputStream()
         val input = PipedInputStream(out, 8192)
         currentOut = out
