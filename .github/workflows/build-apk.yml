@@ -30,6 +30,13 @@ jobs:
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
 
+      # 让后续构建复用同一个 debug 签名，装过的 APK 才能直接覆盖升级
+      - name: Cache debug keystore
+        uses: actions/cache@v4
+        with:
+          path: ~/.android/debug.keystore
+          key: android-debug-keystore-v1
+
       - name: Make gradlew executable
         run: chmod +x gradlew
 
