@@ -1,73 +1,75 @@
-# ddo-tts（Edge 朗读修复版）
+# ddo-tts（Edge 朗讀修復版）
 
-> 基于 [wangz-code/ddo-tts](https://github.com/wangz-code/ddo-tts) 的个人修改版。
-> 修复 **2026 年 10 月起 Edge 大声朗读完全没声音** 的问题，并把朗读倍速做成真正可调（0.5x ~ 5.0x）。
+**繁體中文** ｜ [English](README.en.md)
 
-## 这个版本改了什么
+> 基於 [wangz-code/ddo-tts](https://github.com/wangz-code/ddo-tts) 的個人修改版。
+> 修復 **2026 年 10 月起 Edge 大聲朗讀完全沒聲音** 的問題，並把朗讀倍速做成真正可調（0.5x ~ 5.0x）。
 
-| # | 改动 | 说明 |
+## 這個版本改了什麼
+
+| # | 改動 | 說明 |
 |---|---|---|
-| 1 | **修复 Edge 大声朗读 403** | 微软 2026-10 起强制 `Sec-MS-GEC` v2 token，旧的 v1 token 握手一律 403。这里按 [rany2/edge-tts PR #492](https://github.com/rany2/edge-tts/pull/492) 移植了 v2 生成算法（CS64 + SHA256），`Sec-MS-GEC-Version` 同步改为 `2-…` |
-| 2 | **朗读倍速真的能调** | 朗读面板的拉杆现在按界面显示的 **0.5x ~ 5.0x** 生效；≤2x 交给微软合成，超过 2 倍的部分用 ExoPlayer 补速（保持音高） |
-| 3 | **失败不再静默卡死** | 以前 WebSocket 403 时音频管道不关闭，表现为「点了没反应也不报错」；现在会关闭管道并打日志 |
-| 4 | **固定签名 + 自动出包** | GitHub Actions 一键编译，签名密钥缓存在 CI，之后可以直接覆盖升级 |
+| 1 | **修復 Edge 大聲朗讀 403** | 微軟 2026-10 起強制 `Sec-MS-GEC` v2 token，舊的 v1 token 握手一律 403。這裡依照 [rany2/edge-tts PR #492](https://github.com/rany2/edge-tts/pull/492) 移植了 v2 演算法（CS64 + SHA256），`Sec-MS-GEC-Version` 同步改為 `2-…` |
+| 2 | **朗讀倍速真的能調** | 朗讀面板的拉桿現在依照介面顯示的 **0.5x ~ 5.0x** 生效；≤2x 交給微軟合成，超過 2 倍的部分改用 ExoPlayer 補速（保持音高） |
+| 3 | **失敗不再靜默卡死** | 以前 WebSocket 403 時音訊管道不會關閉，表現成「點了沒反應也不報錯」；現在會關閉管道並寫入 log |
+| 4 | **固定簽名 + 自動出包** | GitHub Actions 一鍵編譯，簽名金鑰快取在 CI，之後可以直接覆蓋升級 |
 
-## 下载
+## 下載
 
-到本仓库的 **Releases** 下载最新的 `legado-edge-*.apk`。
+到本倉庫的 **Releases** 下載最新的 `legado-edge-*.apk`。
 
-> 这是 **debug 包**，包名 `io.legado.app.debug`，可以和官方版共存。
+> 這是 **debug 包**，套件名為 `io.legado.app.debug`，可以和官方版共存。
 
-### 首次安装（重要）
+### 首次安裝（重要）
 
-如果你之前装过别的 debug 包（签名不同），Android 不允许覆盖安装：
+如果你之前裝過別的 debug 包（簽名不同），Android 不允許覆蓋安裝：
 
-1. 旧版 → **备份**（WebDAV 或本地文件）
-2. **卸载**旧的「阅读」debug 版
-3. 安装本 APK
-4. 打开 → **恢复备份**
+1. 舊版 → **備份**（WebDAV 或本機檔案）
+2. **解除安裝**舊的「閱讀」debug 版
+3. 安裝本 APK
+4. 開啟 → **還原備份**
 
-装过一次之后，后续版本都是同一把签名，**直接覆盖升级即可**。
+裝過一次之後，後續版本都是同一把簽名，**直接覆蓋升級即可**。
 
 ## 使用方法
 
-### 调速
+### 調速
 
-- **朗读面板底部拉杆**：0.5x ~ 5.0x，拖到 3.0 就是 3 倍
-- **朗读引擎 → Edge大声朗读 → 右侧铅笔**：嗓音下拉 + 语速滑杆（和主拉杆是同一个设置，两边同步）
-- 改完速度需要**停止再重新朗读**，旧缓存音频会按新速度重新合成
+- **朗讀面板底部拉桿**：0.5x ~ 5.0x，拉到 3.0 就是 3 倍
+- **朗讀引擎 → Edge大聲朗讀 → 右側鉛筆**：嗓音下拉 + 語速滑桿（和主拉桿是同一個設定，兩邊同步）
+- 改完速度需要**停止再重新朗讀**，舊的快取音訊會依新速度重新合成
 
-### 音质提示
+### 音質提示
 
-- ≤ 2.0x：微软直接合成，音质最好
-- 2.5x ~ 3.5x：播放器补速，略有机械感
-- 4.0x ~ 5.0x：明显加速感，适合赶进度
+- ≤ 2.0x：微軟直接合成，音質最好
+- 2.5x ~ 3.5x：播放器補速，略有機械感
+- 4.0x ~ 5.0x：明顯加速感，適合趕進度
 
-## 为什么之前会坏
+## 為什麼之前會壞
 
-**1）token 换代**
+**1）token 換代**
 
-旧代码：
+舊程式碼：
 
 ```
 Sec-MS-GEC = SHA256(ticks + TrustedClientToken)        # 64 位 hex
 Sec-MS-GEC-Version: 1-143.0.3650.75
 ```
 
-微软 2026-10 起要求：
+微軟 2026-10 起要求：
 
 ```
 Sec-MS-GEC = "<16 位 CS64>-<64 位 SHA256>"
 Sec-MS-GEC-Version: 2-…
 ```
 
-时间线：10/10 前后各地开始 403 → 10/13 上游 [edge-tts](https://github.com/rany2/edge-tts) 用 PR #492 修复。所有基于旧版 edge-tts 的客户端同时失效，不只是这个 App。
+時間線：10/10 前後各地開始 403 → 10/13 上游 [edge-tts](https://github.com/rany2/edge-tts) 以 PR #492 修復。所有基於舊版 edge-tts 的客戶端同時失效，不只是這個 App。
 
-**2）SSML 语速有硬上限**
+**2）SSML 語速有硬上限**
 
-实测同一段文字（24kHz/48kbps CBR，用音频字节数反推时长）：
+實測同一段文字（24kHz/48kbps CBR，用音訊位元組數反推時長）：
 
-| `rate` | 时长 |
+| `rate` | 時長 |
 |---|---|
 | `+0%` | 8.71 s |
 | `+50%` | 5.83 s |
@@ -75,40 +77,40 @@ Sec-MS-GEC-Version: 2-…
 | `+150%` | 4.39 s |
 | `+200%` | 4.39 s |
 
-`+100%` 以上服务端直接忽略，所以「调到 5 倍跟 2 倍一样」是微软的限制，不是 App 的问题。这也是为什么本版本把 >2x 的部分改成播放器补速。
+`+100%` 以上伺服器直接忽略，所以「調到 5 倍跟 2 倍一樣」是微軟的限制，不是 App 的問題。這也是為什麼本版本把 >2x 的部分改成播放器補速。
 
-## 自己编译
+## 自己編譯
 
-### GitHub Actions（推荐，零本地安装）
+### GitHub Actions（推薦，零本機安裝）
 
-1. Fork 本仓库
+1. Fork 本倉庫
 2. **Actions** → **Build APK** → **Run workflow**
-3. 等 10~20 分钟，在该次运行页面底部下载 artifact
+3. 等 10~20 分鐘，在該次執行頁面底部下載 artifact
 
-### 本地编译
+### 本機編譯
 
 ```bash
 git clone https://github.com/<your-name>/ddo-tts.git
 cd ddo-tts
 ./gradlew assembleAppDebug
-# 产物：app/build/outputs/apk/app/debug/*.apk
+# 產物：app/build/outputs/apk/app/debug/*.apk
 ```
 
 需要 **JDK 17** 和 **Android SDK**（platform 36 / build-tools 36）。
 
-## 目录说明
+## 目錄說明
 
-| 文件 | 作用 |
+| 檔案 | 作用 |
 |---|---|
-| `app/src/main/java/io/legado/app/service/SecMsGec.kt` | Sec-MS-GEC v2 token 生成（CS64 + SHA256） |
-| `app/src/main/java/io/legado/app/service/EdgeSpeed.kt` | 倍速换算：SSML ≤2x + 播放器补速 |
-| `app/src/main/java/io/legado/app/service/EdgeSpeakFetch.kt` | Edge 朗读 WebSocket 客户端 |
-| `app/src/main/java/io/legado/app/service/TTSEdgeAloudService.kt` | 朗读服务（缓存、播放、进度） |
-| `app/src/main/java/io/legado/app/ui/book/read/config/SpeakEngineDialog.kt` | 引擎/嗓音/语速设置界面 |
-| `app/src/test/java/io/legado/app/SecMsGecTest.kt` | token 向量测试（CI 会先跑） |
-| `app/src/test/java/io/legado/app/EdgeSpeedTest.kt` | 倍速换算测试 |
+| `app/src/main/java/io/legado/app/service/SecMsGec.kt` | Sec-MS-GEC v2 token 產生（CS64 + SHA256） |
+| `app/src/main/java/io/legado/app/service/EdgeSpeed.kt` | 倍速換算：SSML ≤2x + 播放器補速 |
+| `app/src/main/java/io/legado/app/service/EdgeSpeakFetch.kt` | Edge 朗讀 WebSocket 客戶端 |
+| `app/src/main/java/io/legado/app/service/TTSEdgeAloudService.kt` | 朗讀服務（快取、播放、進度） |
+| `app/src/main/java/io/legado/app/ui/book/read/config/SpeakEngineDialog.kt` | 引擎／嗓音／語速設定介面 |
+| `app/src/test/java/io/legado/app/SecMsGecTest.kt` | token 向量測試（CI 會先跑） |
+| `app/src/test/java/io/legado/app/EdgeSpeedTest.kt` | 倍速換算測試 |
 
-## 致谢
+## 致謝
 
 - 上游 App：[wangz-code/ddo-tts](https://github.com/wangz-code/ddo-tts)
-- token 算法：[rany2/edge-tts](https://github.com/rany2/edge-tts)（PR #492，抓包验证的 v2 实现）
+- token 演算法：[rany2/edge-tts](https://github.com/rany2/edge-tts)（PR #492，抓包驗證的 v2 實作）
