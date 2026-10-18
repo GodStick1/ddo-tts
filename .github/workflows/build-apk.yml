@@ -1,6 +1,6 @@
 name: Build APK
 
-# 只要 push 到 main，或者在 Actions 页面手动点 "Run workflow"，就会编译一个可安装的 debug APK。
+# 只要 push 到 main，或者在 Actions 页面手动点 "Run workflow"，就会编译一个可安装的 APK。
 on:
   workflow_dispatch:
   push:
@@ -30,12 +30,24 @@ jobs:
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
 
-      # 让后续构建复用同一个 debug 签名，装过的 APK 才能直接覆盖升级
-      - name: Cache debug keystore
+      # 固定签名：第一次运行生成 keystore 并缓存，之后每次复用，APK 可以直接覆盖升级
+      - name: Cache signing key
         uses: actions/cache@v4
         with:
-          path: ~/.android/debug.keystore
-          key: android-debug-keystore-v1
+          path: ~/signing/ddo-tts.jks
+          key: ddo-tts-signing-v1
+
+      - name: Create signing key if missing
+        run: |
+          mkdir -p ~/signing
+          if [ ! -f ~/signing/ddo-tts.jks ]; then
+            keytool -genkeypair -v \
+              -keystore ~/signing/ddo-tts.jks \
+              -storepass ddo-tts-local -keypass ddo-tts-local \
+              -alias ddo -keyalg RSA -keysize 2048 -validity 10000 \
+              -dname "CN=ddo-tts,O=local,C=TW"
+          fi
+          keytool -list -keystore ~/signing/ddo-tts.jks -storepass ddo-tts-local | tail -3
 
       - name: Make gradlew executable
         run: chmod +x gradlew
@@ -49,6 +61,20 @@ jobs:
 
       - name: Build debug APK
         run: ./gradlew assembleAppDebug --stacktrace
+
+      - name: Sign APK with stable key
+        run: |
+          BUILD_TOOLS=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)
+          APK=$(ls app/build/outputs/apk/app/debug/*.apk | head -1)
+          echo "signing $APK with $BUILD_TOOLS"
+          "$BUILD_TOOLS/zipalign" -f -p 4 "$APK" /tmp/aligned.apk
+          "$BUILD_TOOLS/apksigner" sign \
+            --ks ~/signing/ddo-tts.jks \
+            --ks-pass pass:ddo-tts-local \
+            --key-pass pass:ddo-tts-local \
+            --out /tmp/signed.apk /tmp/aligned.apk
+          cp /tmp/signed.apk "$APK"
+          "$BUILD_TOOLS/apksigner" verify --print-certs "$APK" | head -5
 
       - name: Show APK
         run: ls -lh app/build/outputs/apk/app/debug/
