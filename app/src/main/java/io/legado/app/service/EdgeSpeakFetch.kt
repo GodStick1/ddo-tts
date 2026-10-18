@@ -37,8 +37,9 @@ class EdgeSpeakFetch {
         // 否则 WebSocket 握手直接 403（这就是内置 Edge 朗读失效的原因）。
         private const val SEC_MS_GEC_VERSION: String = SecMsGec.VERSION
 
-        // 朗读加速：在原有速度基础上整体再加 25%，嫌快/嫌慢改这里即可（范围 -50 ~ +100）
-        private const val SPEED_BOOST_PERCENT = 25
+        // 语速倍数在「朗读引擎 → Edge大声朗读 → 编辑」里调，存于 SharedPreferences。
+        // 注意：微软 SSML 的 rate 上限是 +100%（2 倍），再大的值会被服务端忽略，
+        // 所以 >2 倍的部分由 EdgeSpeed 换算成播放器倍速来补。
 
         // 基础请求头（对应Python的BASE_HEADERS）
         val BASE_HEADERS = mapOf(
@@ -227,7 +228,8 @@ class EdgeSpeakFetch {
     fun synthesizeText(
         speakText: String,
         rate: Int,
-        voice: String = DEFAULT_VOICE
+        voice: String = DEFAULT_VOICE,
+        speedScale: Float = EdgeSpeed.DEFAULT_SCALE
     ): InputStream {
         initStream()
         Log.i(TAG, "speakText: $speakText")
@@ -236,7 +238,7 @@ class EdgeSpeakFetch {
             val currentTime = System.currentTimeMillis()
             val timeDiff = currentTime - lastTime
             // 判断是否超过毫秒
-            val ssml = mkSSML(speakTextStr, voice, processRate(rate))
+            val ssml = mkSSML(speakTextStr, voice, processRate(rate, speedScale))
             if (timeDiff < 500 && !isReconnect && count <= 20) {
                 Log.i(TAG, "复用上次Wss_count=" + count)
                 wss = lastWss
@@ -310,11 +312,9 @@ class EdgeSpeakFetch {
         return UUID.randomUUID().toString().replace("-".toRegex(), "")
     }
 
-    // 生成带符号的百分比字符串，并在原始速度上整体加速
-    private fun processRate(rate: Int): String {
-        val base = rate - 12
-        val boosted = (base + SPEED_BOOST_PERCENT).coerceIn(-50, 100)
-        return if (boosted > 0) "+$boosted%" else "$boosted%"
+    // SSML 语速：最大只到 +100%，剩余倍数由播放器补（见 EdgeSpeed）
+    private fun processRate(rate: Int, speedScale: Float): String {
+        return EdgeSpeed.ssmlRate(EdgeSpeed.ssmlPercent(rate, speedScale))
     }
 
     fun release() {

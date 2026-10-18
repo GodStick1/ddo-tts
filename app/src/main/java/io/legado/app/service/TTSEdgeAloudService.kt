@@ -61,6 +61,7 @@ class TTSEdgeAloudService : BaseReadAloudService(), Player.Listener {
     }
     private val tag = "TTSEdgeAloudService"
     private var speechRate: Int = AppConfig.speechRatePlay + 5
+    private var speedScale: Float = EdgeSpeed.DEFAULT_SCALE
     private var downloadTask: Coroutine<*>? = null
     private var playIndexJob: Job? = null
     private var playErrorNo = 0
@@ -128,6 +129,9 @@ class TTSEdgeAloudService : BaseReadAloudService(), Player.Listener {
     private fun downloadAndPlayAudios() {
         removeUnUseCache()
         exoPlayer.clearMediaItems()
+        // 每次开播都重新读一次设置，改了倍数不用重启 App
+        speedScale = EdgeSpeedPrefs.getScale(this)
+        exoPlayer.setPlaybackSpeed(EdgeSpeed.playerSpeed(speechRate, speedScale))
         Log.d(tag, "clearMediaItems audioCache Size= ${audioCache.size}")
         downloadTask?.cancel()
         downloadTask = execute {
@@ -201,7 +205,7 @@ class TTSEdgeAloudService : BaseReadAloudService(), Player.Listener {
         try {
             return withContext(Dispatchers.IO) {
                 val voice = getVoiceValue()
-                val inputStream = edgeSpeakFetch.synthesizeText(speakText, speechRate,voice)
+                val inputStream = edgeSpeakFetch.synthesizeText(speakText, speechRate, voice, speedScale)
                 cacheAudio(fileName, inputStream)
                 "success"
             }
@@ -213,7 +217,7 @@ class TTSEdgeAloudService : BaseReadAloudService(), Player.Listener {
     }
 
     private fun md5SpeakFileName(content: String): String {
-        return MD5Utils.md5Encode16(MD5Utils.md5Encode16("$speechRate|$content"))
+        return MD5Utils.md5Encode16(MD5Utils.md5Encode16("$speechRate|$speedScale|$content"))
     }
 
     override fun pauseReadAloud(abandonFocus: Boolean) {
@@ -255,7 +259,9 @@ class TTSEdgeAloudService : BaseReadAloudService(), Player.Listener {
             if (speakTextLength <= 0) {
                 return@launch
             }
-            val sleep = exoPlayer.duration / speakTextLength
+            // 播放器倍速会让实际经过时间变短，进度计时也要按同样比例缩放
+            val playerSpeed = EdgeSpeed.playerSpeed(speechRate, speedScale).coerceAtLeast(1f)
+            val sleep = ((exoPlayer.duration / speakTextLength) / playerSpeed).toLong().coerceAtLeast(1L)
             val start = speakTextLength * exoPlayer.currentPosition / exoPlayer.duration
             for (i in start..contentList[nowSpeak].length) {
                 if (pageIndex + 1 < textChapter.pageSize && readAloudNumber + i > textChapter.getReadLength(

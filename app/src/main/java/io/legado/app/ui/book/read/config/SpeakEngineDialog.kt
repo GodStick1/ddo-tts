@@ -12,7 +12,9 @@ import android.widget.ArrayAdapter
 import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.RadioButton
+import android.widget.SeekBar
 import android.widget.Spinner
+import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.widget.Toolbar
 import androidx.fragment.app.viewModels
@@ -165,8 +167,11 @@ class SpeakEngineDialog() : BaseDialogFragment(R.layout.dialog_recycler_view),
                 // 你的点击事件逻辑
                 ivEdit.setOnClickListener {
 
-                    val cacheKey = "tts_edge_voice"
-                    val cacheValue = getSharedPrefValue(context, cacheKey, "")
+                    val voiceKey = "tts_edge_voice"
+                    val speedKey = "tts_edge_speed_scale"
+                    val cacheValue = getSharedPrefValue(context, voiceKey, "")
+                    val savedScale = (getSharedPrefValue(context, speedKey, "1.5")
+                        .toFloatOrNull() ?: 1.5f).coerceIn(1f, 4f)
                     var voiceOptions = listOf(
                         "晓晓@zh-CN-XiaoxiaoNeural",
                         "小艺@zh-CN-XiaoyiNeural",
@@ -206,15 +211,53 @@ class SpeakEngineDialog() : BaseDialogFragment(R.layout.dialog_recycler_view),
                         }
                     }
 
+                    // 3. 语速倍数：1.0x ~ 4.0x，步进 0.1
+                    val speedLabel = TextView(context).apply {
+                        text = "语速倍数：${"%.1f".format(savedScale)}x（1.0 ~ 4.0）"
+                        setPadding(dp2px(context, 16), dp2px(context, 16), dp2px(context, 16), 0)
+                    }
+                    val speedBar = SeekBar(context).apply {
+                        max = 30
+                        progress = ((savedScale - 1f) * 10f).toInt().coerceIn(0, 30)
+                        setPadding(dp2px(context, 16), 0, dp2px(context, 16), 0)
+                        setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                            override fun onProgressChanged(
+                                seekBar: SeekBar?,
+                                progress: Int,
+                                fromUser: Boolean
+                            ) {
+                                speedLabel.text =
+                                    "语速倍数：${"%.1f".format(1f + progress / 10f)}x（1.0 ~ 4.0）"
+                            }
+
+                            override fun onStartTrackingTouch(seekBar: SeekBar?) {}
+
+                            override fun onStopTrackingTouch(seekBar: SeekBar?) {}
+                        })
+                    }
+                    val container = LinearLayout(context).apply {
+                        orientation = LinearLayout.VERTICAL
+                        addView(spinner)
+                        addView(speedLabel)
+                        addView(speedBar)
+                    }
+
                     // 4. 构建弹窗并显示
                     AlertDialog.Builder(context)
-                        .setMessage("保存嗓音后需变更下语速才会使用新嗓音或者是等待读完缓存段落")
-                        .setView(spinner)
+                        .setTitle("Edge 嗓音与语速")
+                        .setMessage("2.0x 以内由微软直接合成；超过 2 倍的部分由播放器补速（音质略降）。保存后重新开始朗读生效。")
+                        .setView(container)
                         .setPositiveButton("保存") { dialog, _ ->
                             // 获取选中的选项并保存到缓存
                             val selectedValue = spinner.selectedItem.toString()
-                            saveToSharedPref(context, cacheKey, selectedValue)
-                            Toast.makeText(context, "已选择：${selectedValue.take(20)}...", Toast.LENGTH_SHORT).show()
+                            val scale = 1f + speedBar.progress / 10f
+                            saveToSharedPref(context, voiceKey, selectedValue)
+                            saveToSharedPref(context, speedKey, scale.toString())
+                            Toast.makeText(
+                                context,
+                                "已保存：${selectedValue.substringBefore("@")} / ${"%.1f".format(scale)}x",
+                                Toast.LENGTH_SHORT
+                            ).show()
                             dialog.dismiss()
                         }
                         .setNegativeButton("取消") { dialog, _ ->

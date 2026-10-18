@@ -33,8 +33,12 @@ jobs:
       - name: Make gradlew executable
         run: chmod +x gradlew
 
-      - name: Unit test (Sec-MS-GEC v2)
-        run: ./gradlew testAppDebugUnitTest --tests "io.legado.app.SecMsGecTest" --stacktrace
+      - name: Unit test (Sec-MS-GEC v2 + 语速换算)
+        run: >-
+          ./gradlew testAppDebugUnitTest
+          --tests "io.legado.app.SecMsGecTest"
+          --tests "io.legado.app.EdgeSpeedTest"
+          --stacktrace
 
       - name: Build debug APK
         run: ./gradlew assembleAppDebug --stacktrace
