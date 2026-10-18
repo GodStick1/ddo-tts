@@ -19,8 +19,16 @@ import java.util.UUID
 import java.util.concurrent.TimeUnit
 import java.util.regex.Pattern
 
+/**
+ * Edge 朗读 WebSocket 客户端。
+ *
+ * 连接策略（Safe Reuse）：
+ * - 一句正常结束（收到 turn.end）后，连接保留，下一句直接复用（省掉 ~300ms 握手）
+ * - 如果上一句还在合成时就被打断（切换语速/翻段），这条连接上还有它的数据，
+ *   直接作废换新连接，避免两句话的音频串在一起
+ * - 每句都有自己独立的管道，音频只会写进发起这句时的那条管道
+ */
 class EdgeSpeakFetch {
-    // 常量定义
     companion object {
         private const val TAG = "EdgeSpeakFetch"
         private const val TRUSTED_CLIENT_TOKEN = "6A5AA1D4EAFF4E9FB37E23D68491D6F4"
@@ -36,17 +44,14 @@ class EdgeSpeakFetch {
         private const val SEC_MS_GEC_VERSION: String = SecMsGec.VERSION
 
         // 语速倍数在「朗读引擎 → Edge大声朗读 → 编辑」里调，存于 AppConfig.ttsSpeechRate。
-        // 注意：微软 SSML 的 rate 上限是 +100%（2 倍），再大的值会被服务端忽略，
-        // 所以 >2 倍的部分由 EdgeSpeed 换算成播放器倍速来补。
+        // 微软 SSML 的 rate 上限是 +100%（2 倍），超过的部分由 EdgeSpeed 换算成播放器倍速。
 
-        // 基础请求头（对应Python的BASE_HEADERS）
         val BASE_HEADERS = mapOf(
             "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${CHROMIUM_MAJOR_VERSION}.0.0.0 Safari/537.36 Edg/${CHROMIUM_MAJOR_VERSION}.0.0.0",
             "Accept-Encoding" to "gzip, deflate, br, zstd",
             "Accept-Language" to "en-US,en;q=0.9"
         )
 
-        // WebSocket专属头（对应Python的WSS_HEADERS）
         val WSS_HEADERS = mapOf(
             "Pragma" to "no-cache",
             "Cache-Control" to "no-cache",
@@ -61,18 +66,13 @@ class EdgeSpeakFetch {
         .writeTimeout(50, TimeUnit.SECONDS)
         .build()
 
-    /**
-     * 每次合成都用全新的管道和全新的连接，并用 generation 丢弃过期连接上迟到的音频帧。
-     *
-     * 旧实现复用 WebSocket 且把输出流存在可变字段里：切换语速时会取消上一个下载任务，
-     * 但旧连接仍在收包，迟到的音频被写进「下一句」的管道，于是两句声音叠在一起。
-     */
-    private var generation = 0
-    private var currentSocket: WebSocket? = null
-    private var currentOut: PipedOutputStream? = null
+    private val lock = Any()
+    private var socket: WebSocket? = null
+    private var socketUsable = false          // 上一句是否「正常结束」，可直接复用
+    private var inFlight = false              // 当前是否有一句正在合成
+    private var activeOut: PipedOutputStream? = null
 
     init {
-        // 启动时自检一次 token 算法，logcat 出现「自检失败」说明移植有问题
         if (!SecMsGec.selfTest()) {
             Log.e(TAG, "Sec-MS-GEC 自检失败：v2 token 算法输出与已知向量不一致")
         }
@@ -83,140 +83,155 @@ class EdgeSpeakFetch {
         rate: Int,
         voice: String = DEFAULT_VOICE
     ): InputStream {
-        // 如果上一句还在合成（例如切换语速时取消了下载任务），先把它关掉，
-        // 否则读端会一直阻塞在 read() 上，协程永远不结束
-        closeQuietly(currentOut)
         val out = PipedOutputStream()
         val input = PipedInputStream(out, 8192)
-        currentOut = out
         Log.i(TAG, "speakText: $speakText")
         try {
-            val speakTextStr = removeSpecialCharacters(speakText)
-            val ssml = mkSSML(speakTextStr, voice, processRate(rate))
-            connect(out, ssml)
+            val ssml = mkSSML(removeSpecialCharacters(speakText), voice, processRate(rate))
+            synchronized(lock) {
+                // 上一句还没结束就被打断：同一条连接上还有它的数据，必须换新连接
+                if (inFlight) {
+                    Log.i(TAG, "上一句未结束，作废当前连接")
+                    socketUsable = false
+                    socket?.cancel()
+                    socket = null
+                    inFlight = false
+                }
+                closeActiveOutLocked()
+                activeOut = out
+                inFlight = true
+
+                val reusable = socketUsable && socket != null
+                socketUsable = false
+
+                if (reusable) {
+                    val ws = socket!!
+                    if (sendSSMLMessage(ws, ssml)) {
+                        Log.i(TAG, "复用已有 WebSocket")
+                        return input
+                    }
+                    // 连接可能已被服务端关掉，发送失败就换新连接
+                    Log.i(TAG, "复用失败，重新连接")
+                    ws.cancel()
+                    socket = null
+                }
+                openLocked(ssml)
+            }
         } catch (e: Exception) {
             Log.e(TAG, "synthesizeText 失败: $e")
-            closeQuietly(out)
+            synchronized(lock) {
+                inFlight = false
+                socketUsable = false
+                closeActiveOutLocked()
+            }
         }
         return input
     }
 
-    private fun connect(out: PipedOutputStream, ssml: String) {
-        val myGeneration = ++generation
-
-        // 关掉上一条连接，它之后送来的数据会被 generation 检查丢弃
-        currentSocket?.let { old ->
-            try {
-                old.close(1000, "正常关闭")
-                old.cancel()
-                Log.i(TAG, "关闭上一条 WebsocketConnect")
-            } catch (e: Exception) {
-                Log.i(TAG, "关闭 WebsocketConnect Exception: $e")
-            }
-        }
-        currentSocket = null
-
+    /** 新建连接，返回时 socket 已赋值；SSML 在 onOpen 里发出 */
+    private fun openLocked(ssml: String) {
         val secMsGec = SecMsGec.generate(System.currentTimeMillis() / 1000.0)
         val connectionId = connectID()
         val queryParams = String.format(
             "ConnectionId=%s&Sec-MS-GEC=%s&Sec-MS-GEC-Version=%s&TrustedClientToken=%s",
-            connectionId,
-            secMsGec,
-            SEC_MS_GEC_VERSION,
-            TRUSTED_CLIENT_TOKEN
+            connectionId, secMsGec, SEC_MS_GEC_VERSION, TRUSTED_CLIENT_TOKEN
         )
         val wsUrl = String.format("wss://%s%s?%s", BASE_URL, WSS_PATH, queryParams)
 
         val requestBuilder = Request.Builder().url(wsUrl)
         BASE_HEADERS.forEach { (key, value) -> requestBuilder.header(key, value) }
         WSS_HEADERS.forEach { (key, value) -> requestBuilder.header(key, value) }
-        val request = requestBuilder.build()
 
         val listener = object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: Response) {
-                if (myGeneration != generation) return
-                Log.i(TAG, "WebSocket onOpen")
-                currentSocket = webSocket
-                sendSpeechConfig(webSocket)
-                sendSSMLMessage(webSocket, ssml)
+                synchronized(lock) {
+                    if (webSocket !== socket) return
+                    Log.i(TAG, "WebSocket onOpen")
+                    sendSpeechConfig(webSocket)
+                    sendSSMLMessage(webSocket, ssml)
+                }
             }
 
             override fun onMessage(webSocket: WebSocket, text: String) {
-                if (myGeneration != generation) return
                 if (text.contains("turn.end")) {
-                    Log.i(TAG, "收到 turn.end 关闭流")
-                    closeQuietly(out)
+                    synchronized(lock) {
+                        if (webSocket !== socket) return
+                        Log.i(TAG, "收到 turn.end，连接可复用")
+                        closeActiveOutLocked()
+                        inFlight = false
+                        socketUsable = true
+                    }
                 } else {
                     Log.d(TAG, "收到文本消息: ${text.take(200)}")
                 }
             }
 
             override fun onMessage(webSocket: WebSocket, bytes: ByteString) {
-                if (myGeneration != generation) {
-                    Log.d(TAG, "丢弃过期连接的音频帧")
-                    return
-                }
+                // 写管道可能阻塞（读端还没消费），所以不要拿着锁写
+                val out = synchronized(lock) {
+                    if (webSocket !== socket || activeOut == null) return
+                    activeOut
+                } ?: return
                 try {
                     val message = bytes.toByteArray()
                     if (message.size < 2) return
-                    // 解析头部长度（前2字节big endian）
                     val headerLength =
                         ((message[0].toInt() and 0xFF) shl 8) or (message[1].toInt() and 0xFF)
                     if (headerLength > message.size) return
                     val audioData = ByteArray(message.size - headerLength - 2)
                     System.arraycopy(message, headerLength + 2, audioData, 0, audioData.size)
                     if (audioData.isNotEmpty()) {
-                        try {
-                            out.write(audioData)
-                            out.flush()
-                        } catch (e: IOException) {
-                            Log.e(TAG, "缓存音频失败", e)
-                        }
+                        out.write(audioData)
+                        out.flush()
                     }
-                } catch (e: Exception) {
-                    Log.i(TAG, "WebSocket onMessage Catch$e")
+                } catch (e: IOException) {
+                    // 管道已被关闭（这句被取消/被下一句顶掉），丢弃即可
+                    Log.d(TAG, "音频写入被中止: $e")
                 }
             }
 
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
-                if (myGeneration != generation) return
-                Log.i(TAG, "WebSocket onClosed$code$reason")
+                synchronized(lock) {
+                    Log.i(TAG, "WebSocket onClosed $code $reason")
+                    if (webSocket !== socket) return
+                    closeActiveOutLocked()
+                    inFlight = false
+                    socketUsable = false
+                    socket = null
+                }
             }
 
-            override fun onFailure(
-                webSocket: WebSocket,
-                t: Throwable,
-                response: Response?
-            ) {
+            override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
                 Log.e(
                     TAG,
-                    "WebSocket onFailure: $t, httpCode=${response?.code}, " +
-                            "msg=${response?.message}"
+                    "WebSocket onFailure: $t, httpCode=${response?.code}, msg=${response?.message}"
                 )
-                if (myGeneration != generation) return
-                // 必须关闭管道，否则调用方会一直阻塞在 read() 上
-                closeQuietly(out)
+                synchronized(lock) {
+                    if (webSocket !== socket) return
+                    closeActiveOutLocked()
+                    inFlight = false
+                    socketUsable = false
+                    socket = null
+                }
             }
         }
-        currentSocket = client.newWebSocket(request, listener)
+        socket = client.newWebSocket(requestBuilder.build(), listener)
     }
 
-    private fun closeQuietly(out: PipedOutputStream?) {
+    private fun closeActiveOutLocked() {
         try {
-            out?.close()
+            activeOut?.close()
         } catch (e: IOException) {
-            Log.i(TAG, "关闭音频管道失败: $e")
+            Log.d(TAG, "关闭音频管道失败: $e")
         }
+        activeOut = null
     }
 
-    // 移除文本中的特殊字符和表情，保留常用文章标点符号
     private fun removeSpecialCharacters(text: String): String {
         val pattern = Pattern.compile("[^\\w\\s\u4e00-\u9fff，。！？；：、（）《》【】“”‘’]")
-        val matcher = pattern.matcher(text)
-        return matcher.replaceAll("")
+        return pattern.matcher(text).replaceAll("")
     }
 
-    // 构造SSML文本
     private fun mkSSML(
         text: String,
         voice: String,
@@ -234,59 +249,52 @@ class EdgeSpeakFetch {
         )
     }
 
-    // 发送speech.config消息
-    private fun sendSpeechConfig(wss: WebSocket) {
-        Log.i(TAG, "准备写入sendSpeechConfig")
+    private fun sendSpeechConfig(wss: WebSocket): Boolean {
+        Log.i(TAG, "发送 speech.config")
         val speechConfig =
             "{\"context\":{\"synthesis\":{\"audio\":{\"metadataoptions\":{\"sentenceBoundaryEnabled\":\"false\",\"wordBoundaryEnabled\":\"true\"},\"outputFormat\":\"audio-24khz-48kbitrate-mono-mp3\"}}}}"
-
-        // 时间格式严格匹配Golang的time.RFC1123
         val sdf = SimpleDateFormat("EEE, dd MMM yyyy HH:mm:ss z", Locale.US)
         sdf.timeZone = TimeZone.getTimeZone("UTC")
         val timestamp = sdf.format(Date())
-
-        val speechConfigMsg = String.format(
+        val msg = String.format(
             "X-Timestamp:%s\r\nContent-Type:application/json; charset=utf-8\r\nPath:speech.config\r\n\r\n%s\r\n",
             timestamp, speechConfig
         )
-        wss.send(speechConfigMsg)
+        return wss.send(msg)
     }
 
-    // 发送SSML消息
-    private fun sendSSMLMessage(wss: WebSocket, ssml: String) {
-        Log.i(TAG, "准备写入SSML")
+    private fun sendSSMLMessage(wss: WebSocket, ssml: String): Boolean {
         val requestId = connectID()
         val sdf = SimpleDateFormat("EEE MMM d yyyy HH:mm:ss zzz", Locale.US)
         sdf.timeZone = TimeZone.getTimeZone("UTC")
         val timestamp = sdf.format(Date())
-
         val ssmlMsg = String.format(
             "X-RequestId:%s\r\nContent-Type:application/ssml+xml\r\nX-Timestamp:%sZ\r\nPath:ssml\r\n\r\n%s",
             requestId, timestamp, ssml
         )
-        Log.i(TAG, "WebSocket sendSSMLMessage")
-        wss.send(ssmlMsg)
+        Log.i(TAG, "发送 SSML")
+        return wss.send(ssmlMsg)
     }
 
-    // 生成无破折号的UUID
-    private fun connectID(): String {
-        return UUID.randomUUID().toString().replace("-".toRegex(), "")
-    }
+    private fun connectID(): String =
+        UUID.randomUUID().toString().replace("-".toRegex(), "")
 
-    // SSML 语速：最大只到 +100%，剩余倍数由播放器补（见 EdgeSpeed）
-    private fun processRate(rate: Int): String {
-        return EdgeSpeed.ssmlRate(EdgeSpeed.ssmlPercent(rate))
-    }
+    private fun processRate(rate: Int): String =
+        EdgeSpeed.ssmlRate(EdgeSpeed.ssmlPercent(rate))
 
     fun release() {
-        generation++
-        try {
-            currentSocket?.close(1000, "正常关闭")
-            currentSocket?.cancel()
-        } catch (e: Exception) {
-            Log.i(TAG, "释放 WebSocket 失败: $e")
+        synchronized(lock) {
+            socketUsable = false
+            inFlight = false
+            try {
+                socket?.close(1000, "正常关闭")
+                socket?.cancel()
+            } catch (e: Exception) {
+                Log.i(TAG, "释放 WebSocket 失败: $e")
+            }
+            socket = null
+            closeActiveOutLocked()
         }
-        closeQuietly(currentOut)
-        Log.i(TAG, "管道流已关闭")
+        Log.i(TAG, "连接已释放")
     }
 }
