@@ -11,10 +11,7 @@ import java.io.IOException
 import java.io.InputStream
 import java.io.PipedInputStream
 import java.io.PipedOutputStream
-import java.security.MessageDigest
-import java.security.NoSuchAlgorithmException
 import java.text.SimpleDateFormat
-import java.time.Instant
 import java.util.Date
 import java.util.Locale
 import java.util.TimeZone
@@ -33,13 +30,15 @@ class EdgeSpeakFetch {
         private const val WSS_PATH = "/consumer/speech/synthesize/readaloud/edge/v1"
         private const val DEFAULT_VOICE = "zh-CN-XiaoxiaoNeural"
 
-        // DRM 相关参数
-        private const val WIN_EPOCH_SECONDS = 11644473600L
-        private const val S_TO_NS = 1e9
-
         private const val CHROMIUM_FULL_VERSION = "143.0.3650.75"
         private var CHROMIUM_MAJOR_VERSION: String = CHROMIUM_FULL_VERSION.split(".", limit = 2)[0]
-        private const val SEC_MS_GEC_VERSION: String = "1-$CHROMIUM_FULL_VERSION"
+
+        // 微软 2026-10 起强制 v2 token，版本号前缀必须是 2-，且 token 必须是 v2 格式，
+        // 否则 WebSocket 握手直接 403（这就是内置 Edge 朗读失效的原因）。
+        private const val SEC_MS_GEC_VERSION: String = SecMsGec.VERSION
+
+        // 朗读加速：在原有速度基础上整体再加 25%，嫌快/嫌慢改这里即可（范围 -50 ~ +100）
+        private const val SPEED_BOOST_PERCENT = 25
 
         // 基础请求头（对应Python的BASE_HEADERS）
         val BASE_HEADERS = mapOf(
@@ -53,47 +52,11 @@ class EdgeSpeakFetch {
             "Pragma" to "no-cache",
             "Cache-Control" to "no-cache",
             "Origin" to "chrome-extension://jdiccldimpdaibmpdkjnbmckianbfold",
-            "Sec-WebSocket-Version" to "13",
-
-            )
+            "Sec-WebSocket-Version" to "13"
+        )
 
         // 避免单个章节太长导致wss 长时间连接
-        var count = 0;
-
-        fun generateSecMsGec(clockSkewSeconds: Double): String {
-            val now = Instant.now().epochSecond + clockSkewSeconds
-            var ticks = now + WIN_EPOCH_SECONDS
-            // 向下取整到最近的5分钟（300秒）
-            ticks -= ticks.toLong() % 300
-            // 转换为100纳秒单位
-            ticks *= (S_TO_NS / 100)
-            // 拼接待哈希字符串
-            val strToHash = String.format(Locale.US, "%.0f%s", ticks, TRUSTED_CLIENT_TOKEN)
-            // 计算SHA-256哈希
-            return sha256(strToHash)
-        }
-
-        private fun sha256(input: String): String {
-            try {
-                val digest = MessageDigest.getInstance("SHA-256")
-                val hash = digest.digest(input.toByteArray())
-                return bytesToHex(hash).uppercase(Locale.getDefault())
-            } catch (e: NoSuchAlgorithmException) {
-                throw RuntimeException("SHA-256 algorithm not available", e)
-            }
-        }
-
-        private fun bytesToHex(bytes: ByteArray): String {
-            // 旧版本 Android，手动实现字节转十六进制字符串
-            val hexArray = "0123456789ABCDEF".toCharArray()
-            val hexChars = CharArray(bytes.size * 2)
-            for (j in bytes.indices) {
-                val v = bytes[j].toInt() and 0xFF
-                hexChars[j * 2] = hexArray[v ushr 4]
-                hexChars[j * 2 + 1] = hexArray[v and 0x0F]
-            }
-            return String(hexChars)
-        }
+        var count = 0
     }
 
     private var lastTime: Long = 0
@@ -107,6 +70,12 @@ class EdgeSpeakFetch {
         .writeTimeout(50, TimeUnit.SECONDS)
         .build()
 
+    init {
+        // 启动时自检一次 token 算法，logcat 出现「自检失败」说明移植有问题
+        if (!SecMsGec.selfTest()) {
+            Log.e(TAG, "Sec-MS-GEC 自检失败：v2 token 算法输出与已知向量不一致")
+        }
+    }
 
     private fun getWssConnect(ssml: String) {
         if (::wss.isInitialized) {
@@ -119,8 +88,7 @@ class EdgeSpeakFetch {
                 e.printStackTrace()
             }
         }
-        val clockSkewSeconds = 0.0
-        val secMsGec = generateSecMsGec(clockSkewSeconds)
+        val secMsGec = SecMsGec.generate(System.currentTimeMillis() / 1000.0)
         val connectionId = connectID()
         val queryParams = String.format(
             "ConnectionId=%s&Sec-MS-GEC=%s&Sec-MS-GEC-Version=%s&TrustedClientToken=%s",
@@ -157,10 +125,11 @@ class EdgeSpeakFetch {
                 // 检测turn.end并关闭流
                 if (text.contains("turn.end")) {
                     Log.i(TAG, "收到turn.end 关闭流")
-                    audioOutputStream.close()
+                    closeStreamQuietly()
                     lastTime = System.currentTimeMillis()
                     lastWss = webSocket
-
+                } else {
+                    Log.d(TAG, "收到文本消息: ${text.take(200)}")
                 }
             }
 
@@ -216,12 +185,26 @@ class EdgeSpeakFetch {
                 response: Response?
             ) {
                 isReconnect = true
-                Log.i(TAG, "WebSocket onFailure: $t $response")
-
+                Log.e(
+                    TAG,
+                    "WebSocket onFailure: $t, httpCode=${response?.code}, " +
+                            "msg=${response?.message}"
+                )
+                // 关键：必须关闭管道，否则调用方会一直阻塞在 read() 上，
+                // 表现为「点了朗读没声音也不报错」
+                closeStreamQuietly()
             }
 
         }
         client.newWebSocket(request, listener)
+    }
+
+    private fun closeStreamQuietly() {
+        try {
+            audioOutputStream.close()
+        } catch (e: IOException) {
+            Log.i(TAG, "关闭音频管道失败: $e")
+        }
     }
 
     // 移除文本中的特殊字符和表情，保留常用文章标点符号
@@ -257,11 +240,11 @@ class EdgeSpeakFetch {
             if (timeDiff < 500 && !isReconnect && count <= 20) {
                 Log.i(TAG, "复用上次Wss_count=" + count)
                 wss = lastWss
-                count += 1;
+                count += 1
                 sendSSMLMessage(wss, ssml)
             } else {
                 Log.i(TAG, "重新生成Wss_count=" + count)
-                count = 0;
+                count = 0
                 getWssConnect(ssml)
             }
         } catch (e: Exception) {
@@ -327,24 +310,16 @@ class EdgeSpeakFetch {
         return UUID.randomUUID().toString().replace("-".toRegex(), "")
     }
 
-    // 生成带符号的百分比字符串
+    // 生成带符号的百分比字符串，并在原始速度上整体加速
     private fun processRate(rate: Int): String {
-        val rateOffset = rate - 12
-        val customRate = if (rateOffset > 0) {
-            "+$rateOffset%"
-        } else {
-            "$rateOffset%"
-        }
-        return customRate
+        val base = rate - 12
+        val boosted = (base + SPEED_BOOST_PERCENT).coerceIn(-50, 100)
+        return if (boosted > 0) "+$boosted%" else "$boosted%"
     }
 
     fun release() {
         if (::lastWss.isInitialized) lastWss.cancel()
-        try {
-            audioOutputStream.close()
-            Log.i(TAG, "管道流已关闭")
-        } catch (e: IOException) {
-            Log.e(TAG, "关闭管道流失败", e)
-        }
+        closeStreamQuietly()
+        Log.i(TAG, "管道流已关闭")
     }
 }
