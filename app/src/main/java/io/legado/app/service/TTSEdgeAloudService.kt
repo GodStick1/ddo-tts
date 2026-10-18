@@ -163,7 +163,8 @@ class TTSEdgeAloudService : BaseReadAloudService(), Player.Listener {
                         .setUri("memory://media/$fileName".toUri())
                         .setMediaId(fileName)
                         .build()
-                    launch(Main) {
+                    // 用 withContext 而不是 launch：任务被取消时不会再异步把旧条目塞进播放器
+                    withContext(Main) {
                         exoPlayer.addMediaItem(mediaItem)
                     }
                 }
