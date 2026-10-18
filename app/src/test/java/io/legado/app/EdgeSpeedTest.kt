@@ -6,7 +6,8 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * 语速换算：SSML 最多 2 倍，剩余由播放器补，两者相乘要等于目标倍数。
+ * 语速换算：拉杆值 0..45 对应界面显示 0.5x ~ 5.0x；
+ * SSML 最多 2 倍，剩余由播放器补，两者相乘要等于目标倍数。
  */
 class EdgeSpeedTest {
 
@@ -14,39 +15,40 @@ class EdgeSpeedTest {
         assertTrue("expected $b but was $a", Math.abs(a - b) < eps)
 
     @Test
-    fun defaultScaleEqualsSeventyPercentBoostAtNormalRate() {
-        // speechRate = 10 时基准是 0.98 倍，乘 1.5 倍 = 1.47 倍
-        approx(EdgeSpeed.totalFactor(10, 1.5f), 1.47)
-        assertEquals(47, EdgeSpeed.ssmlPercent(10, 1.5f))
-        approx(EdgeSpeed.playerSpeed(10, 1.5f).toDouble(), 1.0)
+    fun sliderMatchesDisplayedValue() {
+        approx(EdgeSpeed.sliderFactor(5), 1.0)
+        approx(EdgeSpeed.sliderFactor(0), 0.5)
+        approx(EdgeSpeed.sliderFactor(25), 3.0)
+        approx(EdgeSpeed.sliderFactor(45), 5.0)
     }
 
     @Test
     fun ssmlIsCappedAtHundredPercent() {
-        // 4 倍时 SSML 只给 2 倍，剩下的交给播放器
-        assertEquals(100, EdgeSpeed.ssmlPercent(10, 4f))
-        approx(EdgeSpeed.playerSpeed(10, 4f).toDouble(), 1.96, 0.02)
-        approx(EdgeSpeed.totalFactor(10, 4f), 3.92)
+        // 2 倍以内完全交给 SSML，播放器不用额外加速
+        assertEquals(0, EdgeSpeed.ssmlPercent(5))
+        assertEquals(100, EdgeSpeed.ssmlPercent(15))
+        approx(EdgeSpeed.playerSpeed(15).toDouble(), 1.0)
+
+        // 5 倍时 SSML 只给 2 倍，剩下的交给播放器
+        assertEquals(100, EdgeSpeed.ssmlPercent(45))
+        approx(EdgeSpeed.playerSpeed(45).toDouble(), 2.5)
     }
 
     @Test
     fun splitAlwaysMultipliesBackToTarget() {
-        for (rate in 5..15) {
-            for (step in 10..40) {
-                val scale = step / 10f
-                val total = EdgeSpeed.totalFactor(rate, scale)
-                val ssml = 1.0 + EdgeSpeed.ssmlPercent(rate, scale) / 100.0
-                val player = EdgeSpeed.playerSpeed(rate, scale).toDouble()
-                approx(ssml * player, total, 0.001)
-            }
+        for (value in 0..45) {
+            val total = EdgeSpeed.totalFactor(value)
+            val ssml = 1.0 + EdgeSpeed.ssmlPercent(value) / 100.0
+            val player = EdgeSpeed.playerSpeed(value).toDouble()
+            approx(ssml * player, total, 0.001)
         }
     }
 
     @Test
-    fun scaleIsClamped() {
-        approx(EdgeSpeed.totalFactor(10, 0.1f), EdgeSpeed.totalFactor(10, 1f))
-        approx(EdgeSpeed.totalFactor(10, 99f), EdgeSpeed.totalFactor(10, 4f))
+    fun outOfRangeIsClamped() {
+        approx(EdgeSpeed.totalFactor(-10), 0.5)
+        approx(EdgeSpeed.totalFactor(100), 5.0)
         assertEquals("+100%", EdgeSpeed.ssmlRate(100))
-        assertEquals("-7%", EdgeSpeed.ssmlRate(-7))
+        assertEquals("-20%", EdgeSpeed.ssmlRate(-20))
     }
 }

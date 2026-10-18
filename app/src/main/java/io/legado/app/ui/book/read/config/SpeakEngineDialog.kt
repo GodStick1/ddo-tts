@@ -168,10 +168,8 @@ class SpeakEngineDialog() : BaseDialogFragment(R.layout.dialog_recycler_view),
                 ivEdit.setOnClickListener {
 
                     val voiceKey = "tts_edge_voice"
-                    val speedKey = "tts_edge_speed_scale"
                     val cacheValue = getSharedPrefValue(context, voiceKey, "")
-                    val savedScale = (getSharedPrefValue(context, speedKey, "1.5")
-                        .toFloatOrNull() ?: 1.5f).coerceIn(1f, 4f)
+                    val savedRate = AppConfig.ttsSpeechRate.coerceIn(0, 45)
                     var voiceOptions = listOf(
                         "晓晓@zh-CN-XiaoxiaoNeural",
                         "小艺@zh-CN-XiaoyiNeural",
@@ -211,14 +209,14 @@ class SpeakEngineDialog() : BaseDialogFragment(R.layout.dialog_recycler_view),
                         }
                     }
 
-                    // 3. 语速倍数：1.0x ~ 4.0x，步进 0.1
+                    // 3. 语速：和朗读面板那根拉杆是同一个设置（0.5x ~ 5.0x）
                     val speedLabel = TextView(context).apply {
-                        text = "语速倍数：${"%.1f".format(savedScale)}x（1.0 ~ 4.0）"
+                        text = "语速：${"%.1f".format((savedRate + 5) / 10f)}x（0.5 ~ 5.0）"
                         setPadding(dp2px(context, 16), dp2px(context, 16), dp2px(context, 16), 0)
                     }
                     val speedBar = SeekBar(context).apply {
-                        max = 30
-                        progress = ((savedScale - 1f) * 10f).toInt().coerceIn(0, 30)
+                        max = 45
+                        progress = savedRate
                         setPadding(dp2px(context, 16), 0, dp2px(context, 16), 0)
                         setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
                             override fun onProgressChanged(
@@ -227,7 +225,7 @@ class SpeakEngineDialog() : BaseDialogFragment(R.layout.dialog_recycler_view),
                                 fromUser: Boolean
                             ) {
                                 speedLabel.text =
-                                    "语速倍数：${"%.1f".format(1f + progress / 10f)}x（1.0 ~ 4.0）"
+                                    "语速：${"%.1f".format((progress + 5) / 10f)}x（0.5 ~ 5.0）"
                             }
 
                             override fun onStartTrackingTouch(seekBar: SeekBar?) {}
@@ -245,17 +243,18 @@ class SpeakEngineDialog() : BaseDialogFragment(R.layout.dialog_recycler_view),
                     // 4. 构建弹窗并显示
                     AlertDialog.Builder(context)
                         .setTitle("Edge 嗓音与语速")
-                        .setMessage("2.0x 以内由微软直接合成；超过 2 倍的部分由播放器补速（音质略降）。保存后重新开始朗读生效。")
+                        .setMessage("语速和朗读面板的拉杆是同一个设置，两边会同步。2.0x 以内由微软合成，超过 2 倍的部分由播放器补速（音质略降）。")
                         .setView(container)
                         .setPositiveButton("保存") { dialog, _ ->
                             // 获取选中的选项并保存到缓存
                             val selectedValue = spinner.selectedItem.toString()
-                            val scale = 1f + speedBar.progress / 10f
+                            val factor = (speedBar.progress + 5) / 10f
                             saveToSharedPref(context, voiceKey, selectedValue)
-                            saveToSharedPref(context, speedKey, scale.toString())
+                            AppConfig.ttsSpeechRate = speedBar.progress
+                            ReadAloud.upTtsSpeechRate(requireContext())
                             Toast.makeText(
                                 context,
-                                "已保存：${selectedValue.substringBefore("@")} / ${"%.1f".format(scale)}x",
+                                "已保存：${selectedValue.substringBefore("@")} / ${"%.1f".format(factor)}x",
                                 Toast.LENGTH_SHORT
                             ).show()
                             dialog.dismiss()

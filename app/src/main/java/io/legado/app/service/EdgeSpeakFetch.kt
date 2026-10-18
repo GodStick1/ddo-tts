@@ -228,8 +228,7 @@ class EdgeSpeakFetch {
     fun synthesizeText(
         speakText: String,
         rate: Int,
-        voice: String = DEFAULT_VOICE,
-        speedScale: Float = EdgeSpeed.DEFAULT_SCALE
+        voice: String = DEFAULT_VOICE
     ): InputStream {
         initStream()
         Log.i(TAG, "speakText: $speakText")
@@ -238,7 +237,7 @@ class EdgeSpeakFetch {
             val currentTime = System.currentTimeMillis()
             val timeDiff = currentTime - lastTime
             // 判断是否超过毫秒
-            val ssml = mkSSML(speakTextStr, voice, processRate(rate, speedScale))
+            val ssml = mkSSML(speakTextStr, voice, processRate(rate))
             if (timeDiff < 500 && !isReconnect && count <= 20) {
                 Log.i(TAG, "复用上次Wss_count=" + count)
                 wss = lastWss
@@ -313,8 +312,8 @@ class EdgeSpeakFetch {
     }
 
     // SSML 语速：最大只到 +100%，剩余倍数由播放器补（见 EdgeSpeed）
-    private fun processRate(rate: Int, speedScale: Float): String {
-        return EdgeSpeed.ssmlRate(EdgeSpeed.ssmlPercent(rate, speedScale))
+    private fun processRate(rate: Int): String {
+        return EdgeSpeed.ssmlRate(EdgeSpeed.ssmlPercent(rate))
     }
 
     fun release() {
