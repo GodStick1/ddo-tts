@@ -210,11 +210,24 @@ abstract class BaseReadAloudService : BaseService(),
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
-            IntentAction.play -> newReadAloud(
-                intent.getBooleanExtra("play", true),
-                intent.getIntExtra("pageIndex", ReadBook.durPageIndex),
-                intent.getIntExtra("startPos", 0)
-            )
+            IntentAction.play -> {
+                val play = intent.getBooleanExtra("play", true)
+                val targetPage = intent.getIntExtra("pageIndex", ReadBook.durPageIndex)
+                val startPos = intent.getIntExtra("startPos", 0)
+                // 同章同页、音频已就绪时，重复的 play 意图要当成「继续播放」。
+                // 否则会重建播放列表、从本页开头重播（锁屏/切后台后系统补发 play 意图时最明显）
+                if (play && startPos == 0 && isRun && !pause &&
+                    targetPage == pageIndex &&
+                    textChapter?.chapter?.index == ReadBook.curTextChapter?.chapter?.index &&
+                    hasLoadedAudio()
+                ) {
+                    AppLog.put("忽略重复的朗读请求（同章同页），继续播放")
+                    resumeReadAloud()
+                } else {
+                    AppLog.put("开始朗读 play=$play page=$targetPage startPos=$startPos")
+                    newReadAloud(play, targetPage, startPos)
+                }
+            }
 
             IntentAction.pause -> pauseReadAloud()
             IntentAction.resume -> resumeReadAloud()
@@ -300,6 +313,9 @@ abstract class BaseReadAloudService : BaseService(),
     }
 
     abstract fun playStop()
+
+    /** 当前是否已有可续播的音频（子类按自己的播放器实现） */
+    protected open fun hasLoadedAudio(): Boolean = false
 
     @CallSuper
     open fun pauseReadAloud(abandonFocus: Boolean = true) {

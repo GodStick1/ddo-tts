@@ -100,6 +100,7 @@ class TTSEdgeAloudService : BaseReadAloudService(), Player.Listener {
     }
 
     override fun play() {
+        AppLog.putDebug("TTSEdge play() 重建播放列表 nowSpeak=$nowSpeak")
         pageChanged = false
         exoPlayer.stop()
         if (!requestFocus()) return
@@ -228,6 +229,7 @@ class TTSEdgeAloudService : BaseReadAloudService(), Player.Listener {
 
     override fun pauseReadAloud(abandonFocus: Boolean) {
         super.pauseReadAloud(abandonFocus)
+        AppLog.putDebug("TTSEdge pauseReadAloud abandonFocus=$abandonFocus")
         Log.i(tag, "pauseReadAloud")
         kotlin.runCatching {
             playIndexJob?.cancel()
@@ -238,6 +240,10 @@ class TTSEdgeAloudService : BaseReadAloudService(), Player.Listener {
 
     override fun resumeReadAloud() {
         super.resumeReadAloud()
+        AppLog.putDebug(
+            "TTSEdge resume pageChanged=$pageChanged " +
+                    "state=${exoPlayer.playbackState} items=${exoPlayer.mediaItemCount}"
+        )
         kotlin.runCatching {
             if (pageChanged) {
                 play()
@@ -246,6 +252,13 @@ class TTSEdgeAloudService : BaseReadAloudService(), Player.Listener {
                 upPlayPos()
             }
         }
+    }
+
+    /** 有已就绪的音频才允许把重复的 play 意图当成「续播」 */
+    override fun hasLoadedAudio(): Boolean {
+        return exoPlayer.mediaItemCount > 0 &&
+                exoPlayer.playbackState != Player.STATE_IDLE &&
+                exoPlayer.playbackState != Player.STATE_ENDED
     }
 
     private fun upPlayPos() {
