@@ -216,7 +216,9 @@ abstract class BaseReadAloudService : BaseService(),
                 val startPos = intent.getIntExtra("startPos", 0)
                 // 同章同页、音频已就绪时，重复的 play 意图要当成「继续播放」。
                 // 否则会重建播放列表、从本页开头重播（锁屏/切后台后系统补发 play 意图时最明显）
-                if (play && startPos == 0 && isRun && !pause &&
+                // 注意：这里不判断 pause。锁屏/切后台时往往是「先暂停、再补发 play」，
+                // 若因为 pause=true 就落回 newReadAloud，还是会从本页开头重播
+                if (play && startPos == 0 && isRun &&
                     targetPage == pageIndex &&
                     textChapter?.chapter?.index == ReadBook.curTextChapter?.chapter?.index &&
                     hasLoadedAudio()

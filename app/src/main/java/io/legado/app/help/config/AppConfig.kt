@@ -510,7 +510,9 @@ object AppConfig : SharedPreferences.OnSharedPreferenceChangeListener {
         get() = appCtx.getPrefBoolean(PreferKey.volumeKeyPage, true)
 
     val volumeKeyPageOnPlay
-        get() = appCtx.getPrefBoolean(PreferKey.volumeKeyPageOnPlay, true)
+        // 默认必须和 pref_config_read.xml 的 defaultValue 一致（false），
+        // 否则界面显示「关闭」但实际仍在翻页，音量键就调不了音量
+        get() = appCtx.getPrefBoolean(PreferKey.volumeKeyPageOnPlay, false)
 
     val mouseWheelPage
         get() = appCtx.getPrefBoolean(PreferKey.mouseWheelPage, true)
